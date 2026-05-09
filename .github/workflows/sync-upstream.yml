@@ -11,6 +11,10 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # 👇👇👇 关键修复：添加此段以获得推送权限 👇👇👇
+    permissions:
+      contents: write
+    
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,5 +40,4 @@ jobs:
           git merge upstream/master
           
           # 5. 推送到你的 Fork 仓库
-          # 如果遇到冲突，可以改为 git push --force origin master
           git push origin master
