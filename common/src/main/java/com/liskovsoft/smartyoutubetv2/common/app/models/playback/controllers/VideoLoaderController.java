@@ -42,6 +42,7 @@ public class VideoLoaderController extends BasePlayerController {
     private static final long BUFFERING_WINDOW_MS = 60_000;
     private static final long BUFFERING_RECURRENCE_COUNT = 5;
     private static final long BUFFERING_CONTINUATION_MS = 20_000;
+    private static final int MIN_SHUFFLE_SIZE = 30;
     private final Playlist mPlaylist;
     private Video mPendingVideo;
     private int mLastErrorType = -1;
@@ -126,7 +127,7 @@ public class VideoLoaderController extends BasePlayerController {
     }
 
     private void onLongBuffering() {
-        if (isPlaybackEnded()) {
+        if (isStreamEnded()) {
             getMainController().onPlayEnd();
         } else if (isOfflineVideo() && isSubtitlesEnabled()) {
             // Long loading subtitles cause hangs
@@ -528,7 +529,7 @@ public class VideoLoaderController extends BasePlayerController {
             return;
         }
 
-        if (isPlaybackEnded()) {
+        if (isStreamEnded()) {
             // Url no longer works (e.g. live stream ended)
             getMainController().onPlayEnd();
             return;
@@ -538,10 +539,7 @@ public class VideoLoaderController extends BasePlayerController {
     }
 
     private void applyEngineErrorAction(int type, int rendererIndex, Throwable error) {
-        final int ACTION_NONE = 0;
-        final int ACTION_RESTART_ENGINE = 1;
-        final int ACTION_RELOAD_VIDEO = 2;
-        int resultAction = ACTION_RESTART_ENGINE;
+        boolean restartEngine = true;
         boolean showMessage = true;
         String errorContent = error != null ? error.getMessage() : null;
         String errorTitle = getErrorTitle(type, rendererIndex);
@@ -561,13 +559,13 @@ public class VideoLoaderController extends BasePlayerController {
                 getPlayerData().setVideoBufferType(PlayerData.BUFFER_MEDIUM);
             } else {
                 getPlayerTweaksData().setSectionPlaylistEnabled(false);
-                resultAction = ACTION_RELOAD_VIDEO;
+                restartEngine = false;
             }
         } else if (Helpers.containsAny(errorContent, "Exception in CronetUrlRequest") && !getPlayerTweaksData().isNetworkErrorFixingDisabled()) {
             if (getVideo() != null && !getVideo().isLive) { // Finished live stream may provoke errors in Cronet
                 getPlayerTweaksData().setPlayerDataSource(PlayerTweaksData.PLAYER_DATA_SOURCE_DEFAULT);
             } else {
-                resultAction = ACTION_RELOAD_VIDEO;
+                restartEngine = false;
             }
         } else if (type == PlayerEventListener.ERROR_TYPE_SOURCE && rendererIndex == PlayerEventListener.RENDERER_INDEX_UNKNOWN) {
             // NOTE: Starts with any (url deciphered incorrectly)
@@ -603,50 +601,43 @@ public class VideoLoaderController extends BasePlayerController {
                 YouTubeServiceManager.instance().applyNoPlaybackFix(); // Response code: 403
             }
 
-            resultAction = ACTION_RELOAD_VIDEO;
+            restartEngine = false;
             showMessage = false;
         } else if (type == PlayerEventListener.ERROR_TYPE_RENDERER && rendererIndex == PlayerEventListener.RENDERER_INDEX_SUBTITLE) {
             // "Response code: 429" (subtitle error)
             // "Response code: 500" (subtitle error)
             disableSubtitles();
-            resultAction = ACTION_RELOAD_VIDEO;
+            restartEngine = false;
         } else if (type == PlayerEventListener.ERROR_TYPE_RENDERER && rendererIndex == PlayerEventListener.RENDERER_INDEX_VIDEO) {
             getPlayerData().setFormat(FormatItem.VIDEO_FHD_AVC_30);
             if (getPlayerTweaksData().isSWDecoderForced()) {
                 getPlayerTweaksData().setSWDecoderForced(false);
             } else {
-                resultAction = ACTION_RELOAD_VIDEO;
+                restartEngine = false;
             }
         } else if (type == PlayerEventListener.ERROR_TYPE_RENDERER && rendererIndex == PlayerEventListener.RENDERER_INDEX_AUDIO) {
             getPlayerData().setFormat(FormatItem.AUDIO_HQ_MP4A);
-            resultAction = ACTION_RELOAD_VIDEO;
+            restartEngine = false;
         } else if (type == PlayerEventListener.ERROR_TYPE_UNEXPECTED) {
-            // Hide unknown errors on all devices
-            //showMessage = true;
             // IllegalStateException: Buffer too small (5242880 < 7208383)
-            if (Helpers.startsWithAny(errorContent, "Buffer too small")) {
-                //getPlayerData().setVideoBufferType(getPlayerData().getVideoBufferType() == PlayerData.BUFFER_LOW
-                //        ? PlayerData.BUFFER_MEDIUM : PlayerData.BUFFER_HIGH);
+            if (Helpers.startsWithAny(errorContent, "Buffer too small", "Invalid to call at Released state; only valid in executing state")) {
                 lowerVideoQuality();
-                resultAction = ACTION_NONE;
-            }
-
-            if (errorContent == null) {
-                showMessage = false;
+                restartEngine = false;
             }
         }
 
         if (showMessage) {
             MessageHelpers.showLongMessage(getContext(), errorMessage);
+            if (getPlayer() != null) {
+                getPlayer().setTitle(errorContent);
+            }
         }
 
-        switch (resultAction) {
-            case ACTION_RESTART_ENGINE:
-                restartEngine();
-                break;
-            case ACTION_RELOAD_VIDEO:
-                reloadVideo();
-                break;
+        if (restartEngine) {
+            restartEngine();
+        } else {
+            // Need at least to reload the video because the player becomes idle after error
+            reloadVideo();
         }
     }
 
@@ -878,7 +869,7 @@ public class VideoLoaderController extends BasePlayerController {
         }
 
         // NOTE: Shuffle only user created playlists (size != -1)
-        if (current.playlistInfo.getSize() != -1) {
+        if (current.playlistInfo.getSize() > MIN_SHUFFLE_SIZE) {
             Video video = new Video();
             video.playlistId = current.playlistId;
             video.playlistIndex = Utils.getRandomIndex(current.playlistInfo.getCurrentIndex(), current.playlistInfo.getSize());
@@ -1042,20 +1033,16 @@ public class VideoLoaderController extends BasePlayerController {
     }
 
     private void disableSubtitles() {
-        //if (getVideo() != null) {
-        //    getPlayerData().disableSubtitlesPerChannel(getVideo().channelId);
-        //}
-
         getPlayerData().setSubtitlesPerChannelEnabled(false); // Important!
         getPlayerData().setFormat(FormatItem.SUBTITLE_NONE);
     }
 
-    private boolean isPlaybackEnded() {
+    private boolean isStreamEnded() {
         if (getPlayer() == null || getVideo() == null) {
             return false;
         }
 
-        return (!getVideo().isLive || getVideo().isLiveEnd)
+        return getVideo().isLiveEnd && getPlayer().getDurationMs() > 0
                 && getPlayer().getDurationMs() - getPlayer().getPositionMs() < STREAM_END_THRESHOLD_MS;
     }
 

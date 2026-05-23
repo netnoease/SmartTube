@@ -28,7 +28,10 @@ import com.liskovsoft.smartyoutubetv2.tv.ui.search.tags.SearchTagsActivity;
 import com.liskovsoft.smartyoutubetv2.tv.ui.signin.SignInActivity;
 import com.liskovsoft.smartyoutubetv2.tv.ui.webbrowser.WebBrowserActivity;
 
+import org.conscrypt.Conscrypt;
+
 import java.lang.Thread.UncaughtExceptionHandler;
+import java.security.Security;
 
 public class MainApplication extends MultiDexApplication { // fix: Didn't find class "com.google.firebase.provider.FirebaseInitProvider"
     static {
@@ -47,11 +50,13 @@ public class MainApplication extends MultiDexApplication { // fix: Didn't find c
     public void onCreate() {
         super.onCreate();
 
-        // Android 4 SponsorBlock fix???
+        // ByeByeDPI fix
         // https://android-review.googlesource.com/c/platform/external/conscrypt/+/89408/
-        //if (Build.VERSION.SDK_INT == 19) {
+        // NOTE: Android 10+ (API 29+) uses system Conscrypt TLS; custom Security providers are unnecessary
+        //if (Build.VERSION.SDK_INT < 29) {
         //    Security.insertProviderAt(Conscrypt.newProvider(), 1);
         //}
+        Security.insertProviderAt(Conscrypt.newProvider(), 1);
 
         setupGlobalExceptionHandler();
         setupViewManager();
@@ -81,11 +86,26 @@ public class MainApplication extends MultiDexApplication { // fix: Didn't find c
         }
 
         Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            if (shouldIgnore(e)) {
+                return;
+            }
+
             applyCrashFixes(e);
             //e = wrapWithAdditionalInfo(e);
 
             defaultHandler.uncaughtException(t, e);
         });
+    }
+
+    private boolean shouldIgnore(Throwable e) {
+        if (Helpers.contains(e.getMessage(), "KatnissVoiceInteractionService")) {
+            // IllegalStateException: Not allowed to start service Intent { act=android.service.voice.VoiceInteractionService
+            // cmp=com.google.android.katniss/.search.serviceapi.KatnissVoiceInteractionService (has extras) }:
+            // app is in background uid UidRecord{40e7240 u0a19 CEM idle change:cached procs:1 seq(0,0,0)}
+            return true;
+        }
+
+        return false;
     }
 
     private Throwable wrapWithAdditionalInfo(Throwable e) {
